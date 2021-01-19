@@ -206,7 +206,10 @@ impl ProbeSeq {
         // 例: self.pos = 4, self.stride = 16, bucket_mask = 7, 则`self.pos += self.stride` = 20
         // `self.pos &= bucket_mask` == `self.pos = 20 & 7 = 4`
 
-        // 例: self.pos = 4, self.stride = 16, bucket_mask =
+        // 例: self.pos = 4, self.stride = 16, bucket_mask = 63, 则`self.pos += self.stride` = 20
+        // `self.pos &= bucket_mask` == `self.pos = 20 & 63 = 20`
+
+        // 添加注释: 此代码简化了self.pos的值的运算, 具体计算逻辑详见上述数据计算示例
         self.pos &= bucket_mask;
     }
 }
@@ -719,11 +722,39 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     fn probe_seq(&self, hash: u64) -> ProbeSeq {
         // 添加注释: h1函数将会把hash值转换为平台对应的usize长度值
         ProbeSeq {
-            // 添加注释: 将处理后的hash值 和 bucket_mask做&位运算
-            // 添加注释: 当桶内为空时, self.bucket_mask的值为0, h1(hash) & 0 的结果将会是0
             // 添加注释: self.bucket_mask会随着table容量的扩充而变化, 未指定容量时的初始值为0
+
             // 添加注释: 例hash=1110111001111000010111000011010000000011011101001110001111100100
             // self.bucket_mask=7, 则h1(hash) & self.bucket_mask = 4
+
+            // 例:
+            // hash = 1110111001111000010111000011010000000011011101001110001111100100
+            // bucket_mask = 63 = 0011 1111
+            // 1110111001111000010111000011010000000011011101001110001111100100
+            // &
+            // 0000000000000000000000000000000000000000000000000000000000111111
+            // =
+            // 0000000000000000000000000000000000000000000000000000000000100100 转换为十进制为36
+
+            // 例:
+            // hash = 1110111001111000010111000011010000000011011101001110001111100100
+            // bucket_mask = 3 = 0000 0011
+            // 1110111001111000010111000011010000000011011101001110001111100100
+            // &
+            // 0000000000000000000000000000000000000000000000000000000000000011
+            // =
+            // 0000000000000000000000000000000000000000000000000000000000000000 转换为十进制为0
+
+            // 例:
+            // hash = 1110111001111000010111000011010000000011011101001110001111100100
+            // bucket_mask = 15 = 0000 1111
+            // 1110111001111000010111000011010000000011011101001110001111100100
+            // &
+            // 0000000000000000000000000000000000000000000000000000000000001111
+            // =
+            // 0000000000000000000000000000000000000000000000000000000000000100 转换为十进制为4
+
+            // h1(hash) & self.bucket_mask 会将pos限定在bucket_mask内
             pos: h1(hash) & self.bucket_mask,
             stride: 0,
         }
@@ -782,7 +813,6 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         loop {
             unsafe {
                 // 添加注释: `ctrl`函数将返回指向控制字节的指针
-                // 添加注释: 根据控制字节指针加载Group
                 let group = Group::load(self.ctrl(probe_seq.pos));
                 // 添加注释: 通过指针地址加载16个字节, 然后调用`match_empty_or_deleted`方法获取16个字节中每个元素的最高位,并获取第一置位
                 // 添加注释: 如果group中已有值, 当等于0时代表有值, 则调用match_empty_or_deleted()时将会得到0, 拿着0去调用lowest_set_bit时将会返回None
@@ -790,8 +820,14 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // 添加注释: 这里的bit是根据以下步骤获取到的
                     // 1.根据指定地址一次性加载16个字节
                     // 2.获取16个字节中每个字节的最高位, 并将该值保存至新的字节`b`中
-                    // 3.如果等于0则代表该插槽中已经存有值, 如果不等于0则代表该插槽当前为空
+                    // 3.如果b等于0则代表该插槽中已经存有值, 如果b不等于0则代表该插槽当前为空
                     // 4.如果插槽为空则查看该字节右侧的零的数量, 例: b = 0b1111 1110, 则右侧零的数量为1, 则bit = 1/1 = 1
+
+                    // `probe_seq.pos + bit` 表示对应group的位置的第几位
+                    // `(probe_seq.pos + bit) & self.bucket_mask`
+                    // 例:
+                    // probe_seq.pos = 21, bit = 0, self.bucket_mask = 63
+                    // `(probe_seq.pos + bit) & self.bucket_mask` = 21
                     let result = (probe_seq.pos + bit) & self.bucket_mask;
 
                     // 添加注释: 在小于Group宽度的表中, 表范围之外的尾随控制字节填充有EMPTY条目.
@@ -809,6 +845,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // control bytes (containing EMPTY).
                     // 添加注释: `is_full`函数检查控制字节是否代表完整的存储桶(高位清零)
                     if unlikely(is_full(*self.ctrl(result))) {
+                        // 添加注释: 检测控制字节的最高位是否为1, 如果为1则进入当前if内
                         debug_assert!(self.bucket_mask < Group::WIDTH);
                         debug_assert_ne!(probe_seq.pos, 0);
                         // 添加注释: 根据指针地址加载16个字节,然后获取每个字节的最高位,并将结果放置在u16类型的变量中
@@ -1173,6 +1210,21 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                 index = self.find_insert_slot(hash);
             }
 
+            // 例:
+            // 数据结构: (&'static str, i32), 大小为24
+
+            // 例:
+            // self.ctrl = 0x82b750
+
+            // 例:
+            // index = 21
+
+            // 例:
+            // bucket.ptr = 0x82b558
+
+            // 0x82b750 - 0x82b558 = 21 * 24
+
+
             // 添加注释: 根据控制字节指针和index包装成Bucket
             // 添加注释: self.ctrl指针-index得到bucket
             let bucket = self.bucket(index);
@@ -1182,6 +1234,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             self.set_ctrl(index, h2(hash));
             // 添加注释: 把value写入到bucket中, value: (K, V)
             // 添加注释: 如何保证写入到bucket中的value的长度不会超出???
+            // self.ctrl指向的底层数组就是按value的大小创建对应的数组, 例: [size_of_value(value); 64], 所以单个元素存储value是满足的
             bucket.write(value);
             self.items += 1;
             bucket
@@ -2147,6 +2200,7 @@ impl<'a, T, A: Allocator + Clone> RawIterHash<'a, T, A> {
             let h2_hash = h2(hash);
 
             // 添加注释: 构建根据hash值进行线性探测
+            // insert数据获取插槽位置时, 构建ProbeSeq就是调用的probe_seq方法, 所以查找时也需要是相同的处理
             let probe_seq = table.probe_seq(hash);
             // 添加注释: 根据指定指针地址加载Group, 一次性加载16个字节
             let group = Group::load(table.ctrl(probe_seq.pos));
@@ -2171,9 +2225,10 @@ impl<'a, T, A: Allocator + Clone> Iterator for RawIterHash<'a, T, A> {
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
-                // 添加注释: self.bitmask.next()方法将会按位读取, 获取`BitMaskIter`每一位的值
+                // 添加注释: self.bitmask.next()方法将会按位读取
                 if let Some(bit) = self.bitmask.next() {
-                    // 添加注释: bit变量值只会是1或0
+                    // 不进入此条件内则代表当前group没有匹配到hash值
+                    // 添加注释: 同插入时相同的处理, 获取index值
                     let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
                     let bucket = self.table.bucket(index);
                     return Some(bucket);

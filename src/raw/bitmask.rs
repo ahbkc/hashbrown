@@ -45,6 +45,10 @@ impl BitMask {
     #[must_use]
     pub fn remove_lowest_bit(self) -> Self {
         // 添加注释: 取出self.0 和 self.0 - 1 进行&位运算
+        // 例:
+        // self.0 = 0000 1000 = 8
+        // self.0 & (self.0 - 1) = 8 & (8 - 1) = 0000 1000 & 0000 0111 = 0000 0000
+        // 此处逻辑是清空最高位1的值
         BitMask(self.0 & (self.0 - 1))
     }
 
