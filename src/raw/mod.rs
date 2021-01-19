@@ -9,11 +9,14 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
 cfg_if! {
+    // 添加注释: 如果可能, 请使用SSE2实现: 它允许我们一次扫描16个存储桶, 而不是8个. 我们不必为AVX烦恼, 因为它需要运行时分派,
+    // 也不会给我们带来太多好处: 找到匹配项的可能性降低了 在头几个水桶之后剧烈地移动
     // Use the SSE2 implementation if possible: it allows us to scan 16 buckets
     // at once instead of 8. We don't bother with AVX since it would require
     // runtime dispatch and wouldn't gain us much anyways: the probability of
     // finding a match drops off drastically after the first few buckets.
     //
+    // 添加注释: 我尝试使用NEON指令在ARM上实现, 但事实证明, 大多数NEON指令具有多周期延迟, 最终超过了通用实现带来的任何收益.
     // I attempted an implementation on ARM using NEON instructions, but it
     // turns out that most NEON instructions have multi-cycle latency, which in
     // the end outweighs any gains over the generic implementation.
@@ -39,6 +42,7 @@ mod bitmask;
 use self::bitmask::{BitMask, BitMaskIter};
 use self::imp::Group;
 
+// 添加注释: 分支预测提示. 目前仅在`nightly`中提供该功能, 但可以将性能持续提高10%-15%
 // Branch prediction hint. This is currently only available on nightly but it
 // consistently improves performance by 10-15%.
 #[cfg(feature = "nightly")]
@@ -79,6 +83,7 @@ unsafe fn offset_from<T>(to: *const T, from: *const T) -> usize {
     (to as usize - from as usize) / mem::size_of::<T>()
 }
 
+// 添加注释: 内存分配错误应返回错误还是终止
 /// Whether memory allocation errors should return an error or abort.
 #[derive(Copy, Clone)]
 enum Fallibility {
@@ -106,24 +111,30 @@ impl Fallibility {
     }
 }
 
+// 添加注释: 空存储桶的控制字节值
 /// Control byte value for an empty bucket.
 const EMPTY: u8 = 0b1111_1111;
 
+// 添加注释: 已删除存储桶的控制字节值
 /// Control byte value for a deleted bucket.
 const DELETED: u8 = 0b1000_0000;
 
+// 添加注释: 检查控制字节是否代表完整的存储桶(高位清零)
 /// Checks whether a control byte represents a full bucket (top bit is clear).
 #[inline]
 fn is_full(ctrl: u8) -> bool {
+    // ctrl & 1000_0000
     ctrl & 0x80 == 0
 }
 
+// 添加注释: 检查控制字节是否代表一个特殊值(设置了最高位)
 /// Checks whether a control byte represents a special value (top bit is set).
 #[inline]
 fn is_special(ctrl: u8) -> bool {
     ctrl & 0x80 != 0
 }
 
+// 添加注释: 检查特殊控制值是否为EMPTY(权检查1位)
 /// Checks whether a special control value is EMPTY (just check 1 bit).
 #[inline]
 fn special_is_empty(ctrl: u8) -> bool {
@@ -131,26 +142,34 @@ fn special_is_empty(ctrl: u8) -> bool {
     ctrl & 0x01 != 0
 }
 
+// 添加注释: 主哈希函数, 用于选择要从中进行探测的初始存储桶
 /// Primary hash function, used to select the initial bucket to probe from.
 #[inline]
 #[allow(clippy::cast_possible_truncation)]
 fn h1(hash: u64) -> usize {
+    // 添加注释: 在32位平台上, 我们只是忽略了较高的哈希位.
     // On 32-bit platforms we simply ignore the higher hash bits.
     hash as usize
 }
 
+// 添加注释: 辅助哈希函数, 保存在控制字节的低7位中.
 /// Secondary hash function, saved in the low 7 bits of the control byte.
 #[inline]
 #[allow(clippy::cast_possible_truncation)]
 fn h2(hash: u64) -> u8 {
+    // 添加注释: 抓取哈希的高7位. 尽管散列通常是一个完整的64位值, 但是某些散列函数(例如FxHash)会产生一个usize结果, 这意味着在32位平台上, 前32位为0
     // Grab the top 7 bits of the hash. While the hash is normally a full 64-bit
     // value, some hash functions (such as FxHash) produce a usize result
     // instead, which means that the top 32 bits are 0 on 32-bit platforms.
     let hash_len = usize::min(mem::size_of::<usize>(), mem::size_of::<u64>());
     let top7 = hash >> (hash_len * 8 - 7);
+    // 添加注释: `truncation`是截断的意思
     (top7 & 0x7f) as u8 // truncation
 }
 
+// 添加注释: 基于三角数的探针序列可以保证(因为我们的表大小是2的幂)可以精确地访问每组元素一次. 三角探针
+// 每次会使我们跳1组. 因此, 首先我们跳1组(这意味着我们只是继续线性扫描), 然后跳2组(跳过1组), 然后跳3组(跳过2组), 依此类推.
+// 证明探针将访问表中的每个组的证明: https://fgiesen.wordpress.com/2015/02/22/triangular-numbers-mod-2n/
 /// Probe sequence based on triangular numbers, which is guaranteed (since our
 /// table size is a power of two) to visit every group of elements exactly once.
 ///
@@ -168,21 +187,35 @@ struct ProbeSeq {
 impl ProbeSeq {
     #[inline]
     fn move_next(&mut self, bucket_mask: usize) {
+        // 添加注释: 我们已经找到了一个空桶, 并结束了探测
         // We should have found an empty bucket by now and ended the probe.
         debug_assert!(
             self.stride <= bucket_mask,
+            // 添加注释: 经过探测序列的末尾
             "Went past end of probe sequence"
         );
 
+        // 添加注释: stride+=Group::WIDTH, 步长为Group::WIDTH
+        // 添加注释: self.stride代表步长, Group::load加载时的长度也是为Group::WIDTH
         self.stride += Group::WIDTH;
         self.pos += self.stride;
+        // 添加注释: self.pos是用于加载Group时用于和self.ctrl计算的值(Group::load(self.ctrl(probe_seq.pos))), 而bucket_mask则代表当前表的容量,
+        // 当在loop中调用move_next方法时, stride会递增为stride=self.stride+Group::WIDTH, 而递增步长时并没有判断表中的bucket_mask的实际容量,
+        // `self.pos &= bucket_mask` 就会将self.pos的值调整为合理的范围内, 不会造成指向指针长度超出的问题, 而bucket_mask是buckets - 1 的值
+
+        // 例: self.pos = 4, self.stride = 16, bucket_mask = 7, 则`self.pos += self.stride` = 20
+        // `self.pos &= bucket_mask` == `self.pos = 20 & 7 = 4`
+
+        // 例: self.pos = 4, self.stride = 16, bucket_mask =
         self.pos &= bucket_mask;
     }
 }
 
+// 添加注释: 考虑到最大装载系数, 返回保存给定数量的项目所需的存储桶数
 /// Returns the number of buckets needed to hold the given number of items,
 /// taking the maximum load factor into account.
 ///
+// 如果发生溢出, 则返回None
 /// Returns `None` if an overflow occurs.
 // Workaround for emscripten bug emscripten-core/emscripten-fastcomp#258
 #[cfg_attr(target_os = "emscripten", inline(never))]
@@ -190,45 +223,63 @@ impl ProbeSeq {
 fn capacity_to_buckets(cap: usize) -> Option<usize> {
     debug_assert_ne!(cap, 0);
 
+    // 对于小型表, 我们至少需要1个空存储桶, 以确保在表中不存在任何元素时可以终止查找
     // For small tables we require at least 1 empty bucket so that lookups are
     // guaranteed to terminate if an element doesn't exist in the table.
     if cap < 8 {
+        // 添加注释: 我们不必为2个存储桶的表大小而烦恼, 因为它只能容纳一个元素. 相反, 我们直接跳到可以容纳3个元素的4个存储桶表
         // We don't bother with a table size of 2 buckets since that can only
         // hold a single element. Instead we skip directly to a 4 bucket table
         // which can hold 3 elements.
         return Some(if cap < 4 { 4 } else { 8 });
     }
 
+    // 添加注释: 否则要求将1/8桶清空(负载为87.5%)
     // Otherwise require 1/8 buckets to be empty (87.5% load)
     //
+    //
+    // 添加注释: 修改时要小心,`calculate_layout`依赖于此处的溢出检查
     // Be careful when modifying this, calculate_layout relies on the
     // overflow check here.
     let adjusted_cap = cap.checked_mul(8)? / 7;
 
+    // 添加注释: 任何溢出都将由`checked_mul`捕获. 此外, `next_power_of_two`(由于先前的除法不会溢出)会清除上述除法中的所有舍入错误.
     // Any overflows will have been caught by the checked_mul. Also, any
     // rounding errors from the division above will be cleaned up by
     // next_power_of_two (which can't overflow because of the previous divison).
+    // 添加注释: `next_power_of_two`函数将会返回大于或者等于self的2的最小幂
+    // 带入数据示例如下:
+    // [0-1].next_power_of_two() = 1, 2.next_power_of_two() = 2, [3-4].next_power_of_two() = 4
+    // [5-8].next_power_of_two() = 8, [9-16].next_power_of_two() = 16, [17-32].next_power_of_two() = 32
     Some(adjusted_cap.next_power_of_two())
 }
 
+// 添加注释: 在考虑最大负载系数的情况下, 返回给定铲斗面罩的最大有效容量
 /// Returns the maximum effective capacity for the given bucket mask, taking
 /// the maximum load factor into account.
 #[inline]
 fn bucket_mask_to_capacity(bucket_mask: usize) -> usize {
+    // 例: bucket_mask = 63
     if bucket_mask < 8 {
+        // 添加注释: 对于带有1/2/4/8桶的table, 我们总是保留一个空插槽.
+        // 添加注释: 请记住, 存储区掩码比存储区数量少一.
         // For tables with 1/2/4/8 buckets, we always reserve one empty slot.
         // Keep in mind that the bucket mask is one less than the bucket count.
         bucket_mask
     } else {
+        // 添加注释: 则下列计算转换为 ((bucket_mask + 1) / 8) * 7 = ((63 + 1) / 8) * 7 = 56
+        // 添加注释: 对于较大的表, 我们保留12.5%
         // For larger tables we reserve 12.5% of the slots as empty.
         ((bucket_mask + 1) / 8) * 7
     }
 }
 
+// 添加注释: 返回一个Layout, 该布局描述哈希表所需的分配以及分配中控制字节的偏移量. (偏移量也是存储桶的最后一个元素)
 /// Returns a Layout which describes the allocation required for a hash table,
 /// and the offset of the control bytes in the allocation.
 /// (the offset is also one past last element of buckets)
 ///
+// 添加注释: 如果发生溢出, 将返回None
 /// Returns `None` if an overflow occurs.
 #[cfg_attr(feature = "inline-more", inline)]
 #[cfg(feature = "nightly")]
@@ -238,12 +289,16 @@ fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
     // Array of buckets
     let data = Layout::array::<T>(buckets).ok()?;
 
+    // 添加注释: 控制字节数组. 这必须与Group大小一致
     // Array of control bytes. This must be aligned to the group size.
     //
+    // 添加注释: 我们在数组末尾添加`Group::WIDTH`控制字节, 该字节在数组的开头复制字节, 从而避免了在探测时执行
+    // 边界检查的需要.
     // We add `Group::WIDTH` control bytes at the end of the array which
     // replicate the bytes at the start of the array and thus avoids the need to
     // perform bounds-checking while probing.
     //
+    // 添加注释: 这里没有可能的溢出, 因为buckets是2的幂, 而Group::WIDTH是个很小的数.
     // There is no possible overflow here since buckets is a power of two and
     // Group::WIDTH is a small number.
     let ctrl = unsafe { Layout::from_size_align_unchecked(buckets + Group::WIDTH, Group::WIDTH) };
@@ -275,12 +330,16 @@ fn calculate_layout<T>(buckets: usize) -> Option<(Layout, usize)> {
     ))
 }
 
+// 添加注释: 对包含`T`的哈希表存储桶的引用.
 /// A reference to a hash table bucket containing a `T`.
 ///
+// 添加注释: 这通常只是指向元素本身的指针. 但是, 如果该元素是ZST, 则我们将跟踪表中该元素的索引, 以使`擦除`正常工作.
 /// This is usually just a pointer to the element itself. However if the element
 /// is a ZST, then we instead track the index of the element in the table so
 /// that `erase` works properly.
 pub struct Bucket<T> {
+    // 添加注释: 实际上, 它是指向下一个元素的指针, 而不是元素本身, 这是维持指针算术不变式所需要的,
+    // 从而保持直接指向元素的指针会带来困难. 使用`NonNull`进行方差和niche布局.
     // Actually it is pointer to next element than element itself
     // this is needed to maintain pointer arithmetic invariants
     // keeping direct pointer to element introduces difficulty.
@@ -288,6 +347,7 @@ pub struct Bucket<T> {
     ptr: NonNull<T>,
 }
 
+// 添加注释: rayon支持需要此Send impl, 这是安全的, 因为Bucket从未在公共API中公开.
 // This Send impl is needed for rayon support. This is safe since Bucket is
 // never exposed in a public API.
 unsafe impl<T> Send for Bucket<T> {}
@@ -303,9 +363,11 @@ impl<T> Bucket<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn from_base_index(base: NonNull<T>, index: usize) -> Self {
         let ptr = if mem::size_of::<T>() == 0 {
+            // 添加注释: 不会溢出, 因为索引必须小于长度
             // won't overflow because index must be less than length
             (index + 1) as *mut T
         } else {
+            // 添加注释: 根据index获取bucket是用ctrl指针-index
             base.as_ptr().sub(index)
         };
         Self {
@@ -323,9 +385,11 @@ impl<T> Bucket<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn as_ptr(&self) -> *mut T {
         if mem::size_of::<T>() == 0 {
+            // 添加注释: 只需返回正确对齐的任意ZST指针
             // Just return an arbitrary ZST pointer which is properly aligned
             mem::align_of::<T>() as *mut T
         } else {
+            // 添加注释: self.ptr - 1
             self.ptr.as_ptr().sub(1)
         }
     }
@@ -334,6 +398,7 @@ impl<T> Bucket<T> {
         let ptr = if mem::size_of::<T>() == 0 {
             (self.ptr.as_ptr() as usize + offset) as *mut T
         } else {
+            // 添加注释: self.ptr - offset
             self.ptr.as_ptr().sub(offset)
         };
         Self {
@@ -370,25 +435,34 @@ impl<T> Bucket<T> {
 pub struct RawTable<T, A: Allocator + Clone> {
     // Mask to get an index from a hash value. The value is one less than the
     // number of buckets in the table.
+    // 添加注释: mask用来从哈希值获取索引, 该值比表中的存储桶数少一.
+    // 添加注释: 此值是存储桶的数量-1的值
+    // 添加注释: 存储桶掩码, 如果未通过初始化函数(new_uninitialized函数可指定bucket_mask值)指定时, 其值默认为0
     bucket_mask: usize,
 
     // [Padding], T1, T2, ..., Tlast, C1, C2, ...
     //                                ^ points here
+    // 添加注释: 指向数据表最后一个元素的指针
     ctrl: NonNull<u8>,
 
     // Number of elements that can be inserted before we need to grow the table
+    // 添加注释: 在我们需要扩展表格之前可以插入的元素数量
     growth_left: usize,
 
     // Number of elements in the table, only really used by len()
+    // 添加注释: 表中的元素数, 只在len()中真正使用
     items: usize,
 
     // Tell dropck that we own instances of T.
+    // 添加注释: 告诉dropck我们拥有T的实例
     marker: PhantomData<T>,
 
+    // 添加注释: 分配器
     alloc: A,
 }
 
 impl<T> RawTable<T, Global> {
+    // 添加注释: 在不分配任何内存的情况下创建一个新的空HashTable
     /// Creates a new empty hash table without allocating any memory.
     ///
     /// In effect this returns a table with exactly 1 bucket. However we can
@@ -397,6 +471,9 @@ impl<T> RawTable<T, Global> {
     #[cfg_attr(feature = "inline-more", inline)]
     pub const fn new() -> Self {
         Self {
+            // 添加注释: 注意将整个切片转换为原始指针
+            // 添加注释: ctrl字段指向一个slice, 该slice是一个长度为Group::WIDTH, 全部元素初始值为0b1111_1111
+            // 添加注释: `Group::static_empty`返回的是一个指向[u8;Group::WIDTH]的指针, ctrl指针的移动范围也应是在Group::WIDTH内
             // Be careful to cast the entire slice to a raw pointer.
             ctrl: unsafe { NonNull::new_unchecked(Group::static_empty() as *const _ as *mut u8) },
             bucket_mask: 0,
@@ -428,8 +505,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 用给定数量的存储桶分配新的哈希表.
     /// Allocates a new hash table with the given number of buckets.
     ///
+    // 添加注释: 控制字节未初始化.
     /// The control bytes are left uninitialized.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn new_uninitialized(
@@ -437,13 +516,16 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         buckets: usize,
         fallibility: Fallibility,
     ) -> Result<Self, TryReserveError> {
+        // 添加注释: is_power_of_two函数用于判断`当且仅当self == 2 ^ k约k时，才返回true`
         debug_assert!(buckets.is_power_of_two());
 
+        // 添加注释: 根据buckets计算布局
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let (layout, ctrl_offset) = match calculate_layout::<T>(buckets) {
             Some(lco) => lco,
             None => return Err(fallibility.capacity_overflow()),
         };
+        // 添加注释: 根据分配器和指定的内存布局分配内存.
         let ptr: NonNull<u8> = match do_alloc(&alloc, layout) {
             Ok(block) => block.cast(),
             Err(_) => return Err(fallibility.alloc_err(layout)),
@@ -476,6 +558,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     None => return Err(fallibility.capacity_overflow()),
                 };
                 let result = Self::new_uninitialized(alloc, buckets, fallibility)?;
+                // 添加注释: 向指针写入`result.num_ctrl_bytes`长度的EMPTY
                 result.ctrl(0).write_bytes(EMPTY, result.num_ctrl_bytes());
 
                 Ok(result)
@@ -533,18 +616,22 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         bucket.to_base_index(self.data_end())
     }
 
+    // 添加注释: 返回指向控制字节的指针
     /// Returns a pointer to a control byte.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn ctrl(&self, index: usize) -> *mut u8 {
         debug_assert!(index < self.num_ctrl_bytes());
+        // 添加注释: 根据self.ctrl指针加上index的指针地址
         self.ctrl.as_ptr().add(index)
     }
 
+    // 添加注释: 返回指向表中元素的指针
     /// Returns a pointer to an element in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn bucket(&self, index: usize) -> Bucket<T> {
         debug_assert_ne!(self.bucket_mask, 0);
         debug_assert!(index < self.buckets());
+        // 添加注释: self.ctrl - index = Bucket
         Bucket::from_base_index(self.data_end(), index)
     }
 
@@ -619,6 +706,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 返回table上探测序列的类似迭代器的对象
+
+    // 添加注释: 该迭代器永远不会终止, 但是可以保证只访问每个存储桶组一次.
+    // 添加注释: 使用`probe_seq`的循环必须在到达包含空桶的组时终止
     /// Returns an iterator-like object for a probe sequence on the table.
     ///
     /// This iterator never terminates, but is guaranteed to visit each bucket
@@ -626,25 +717,37 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     /// reaching a group containing an empty bucket.
     #[cfg_attr(feature = "inline-more", inline)]
     fn probe_seq(&self, hash: u64) -> ProbeSeq {
+        // 添加注释: h1函数将会把hash值转换为平台对应的usize长度值
         ProbeSeq {
+            // 添加注释: 将处理后的hash值 和 bucket_mask做&位运算
+            // 添加注释: 当桶内为空时, self.bucket_mask的值为0, h1(hash) & 0 的结果将会是0
+            // 添加注释: self.bucket_mask会随着table容量的扩充而变化, 未指定容量时的初始值为0
+            // 添加注释: 例hash=1110111001111000010111000011010000000011011101001110001111100100
+            // self.bucket_mask=7, 则h1(hash) & self.bucket_mask = 4
             pos: h1(hash) & self.bucket_mask,
             stride: 0,
         }
     }
 
+    // 添加注释: 设置控制字节, 还可能设置数组末尾的复制控制字节
     /// Sets a control byte, and possibly also the replicated control byte at
     /// the end of the array.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn set_ctrl(&self, index: usize, ctrl: u8) {
+        // 添加注释: 在不使用分支的情况下, 在数组末尾复制第一个Group::WIDTH控制字节
         // Replicate the first Group::WIDTH control bytes at the end of
         // the array without using a branch:
         // - If index >= Group::WIDTH then index == index2.
         // - Otherwise index2 == self.bucket_mask + 1 + index.
         //
+        // 添加注释: 实际上, 从不读取最后一个复制的控制字节, 因为我们将初始索引掩盖了末对齐的负载,
+        //         但是无论如何我们都写了它, 因为它使set_ctrl实现更简单了
         // The very last replicated control byte is never actually read because
         // we mask the initial index for unaligned loads, but we write it
         // anyways because it makes the set_ctrl implementation simpler.
         //
+        // 添加注释: 如果存储桶少于Group::WIDTH, 则此代码将在尾随组的末尾复制存储桶.
+        //         例如, 对于2个存储桶且Group大小为4, 控制字节如下所示
         // If there are fewer buckets than Group::WIDTH then this code will
         // replicate the buckets at the end of the trailing group. For example
         // with 2 buckets and a group size of 4, the control bytes will look
@@ -654,25 +757,47 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         // ---------------------------------------------
         // | [A] | [B] | [EMPTY] | [EMPTY] | [A] | [B] |
         // ---------------------------------------------
+        // 添加注释: wrapping_sub方法将返回操作结果, 而不修改原始结果
+        // the array without using a branch:
+        // - If index >= Group::WIDTH then index == index2.
+        // - Otherwise index2 == self.bucket_mask + 1 + index.
+        // 如果index=2, Group::WIDTH=16, self.bucket_mask=3, 则index2= ((2-16) & 3) + 16 = 2 + 16
         let index2 = ((index.wrapping_sub(Group::WIDTH)) & self.bucket_mask) + Group::WIDTH;
 
+        // 添加注释: 设置对应索引位置的控制字节, `ctrl`变量的值为hash值的高7位
         *self.ctrl(index) = ctrl;
         *self.ctrl(index2) = ctrl;
     }
 
+    // 添加注释: 搜索一个适合插入新元素的空桶或已删除桶
+    // 添加注释: 表格中至少有1个空存储桶
     /// Searches for an empty or deleted bucket which is suitable for inserting
     /// a new element.
     ///
     /// There must be at least 1 empty bucket in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     fn find_insert_slot(&self, hash: u64) -> usize {
+        // 添加注释: 获取table上探测序列的类似迭代器的对象
         let mut probe_seq = self.probe_seq(hash);
         loop {
             unsafe {
+                // 添加注释: `ctrl`函数将返回指向控制字节的指针
+                // 添加注释: 根据控制字节指针加载Group
                 let group = Group::load(self.ctrl(probe_seq.pos));
+                // 添加注释: 通过指针地址加载16个字节, 然后调用`match_empty_or_deleted`方法获取16个字节中每个元素的最高位,并获取第一置位
+                // 添加注释: 如果group中已有值, 当等于0时代表有值, 则调用match_empty_or_deleted()时将会得到0, 拿着0去调用lowest_set_bit时将会返回None
                 if let Some(bit) = group.match_empty_or_deleted().lowest_set_bit() {
+                    // 添加注释: 这里的bit是根据以下步骤获取到的
+                    // 1.根据指定地址一次性加载16个字节
+                    // 2.获取16个字节中每个字节的最高位, 并将该值保存至新的字节`b`中
+                    // 3.如果等于0则代表该插槽中已经存有值, 如果不等于0则代表该插槽当前为空
+                    // 4.如果插槽为空则查看该字节右侧的零的数量, 例: b = 0b1111 1110, 则右侧零的数量为1, 则bit = 1/1 = 1
                     let result = (probe_seq.pos + bit) & self.bucket_mask;
 
+                    // 添加注释: 在小于Group宽度的表中, 表范围之外的尾随控制字节填充有EMPTY条目.
+                    // 不幸的是, 这些会触发一场比赛, 但是一旦被掩盖, 可能会指向一个已经被占用的完整存储桶.
+                    // 我们在这里检测到这种情况, 并从表的开头开始执行第二次扫描. 确保第二次扫描在命中
+                    // 尾随控制字节(包含EMPTY)之前找到一个空插槽(由于负载因素)
                     // In tables smaller than the group width, trailing control
                     // bytes outside the range of the table are filled with
                     // EMPTY entries. These will unfortunately trigger a
@@ -682,9 +807,15 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // table. This second scan is guaranteed to find an empty
                     // slot (due to the load factor) before hitting the trailing
                     // control bytes (containing EMPTY).
+                    // 添加注释: `is_full`函数检查控制字节是否代表完整的存储桶(高位清零)
                     if unlikely(is_full(*self.ctrl(result))) {
                         debug_assert!(self.bucket_mask < Group::WIDTH);
                         debug_assert_ne!(probe_seq.pos, 0);
+                        // 添加注释: 根据指针地址加载16个字节,然后获取每个字节的最高位,并将结果放置在u16类型的变量中
+                        // 添加注释: 然后调用`lowest_set_bit_nonzero`函数
+                        // 如果match_empty_or_deleted返回的是0b0000_0000, 则调用`lowest_set_bit_nonzero`将会得到0
+                        // 如果match_empty_or_deleted返回的是0b1111_1111, 则调用`lowest_set_bit_nonzero`将会得到1
+                        // 如果match_empty_or_deleted返回的是0b1111_0000, 则调用`lowest_set_bit_nonzero`将会得到4
                         return Group::load_aligned(self.ctrl(0))
                             .match_empty_or_deleted()
                             .lowest_set_bit_nonzero();
@@ -693,25 +824,33 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     }
                 }
             }
+            // 添加注释: 深测序列向下移动
+            // 添加注释: 当当前Group都存有值时, 将继续向下探测
             probe_seq.move_next(self.bucket_mask);
         }
     }
 
+    // 添加注释: 将所有表存储桶标记为空而不删除其内容
     /// Marks all table buckets as empty without dropping their contents.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn clear_no_drop(&mut self) {
         if !self.is_empty_singleton() {
             unsafe {
+                // 添加注释: 根据表中的控制字节数向控制字节指针地址覆盖写入EMPTY,使表为EMPTY
                 self.ctrl(0).write_bytes(EMPTY, self.num_ctrl_bytes());
             }
         }
+        // 添加注释: 将表中数量清空
         self.items = 0;
+        // 添加注释: 根据bucket_mask计算出growth_left值
         self.growth_left = bucket_mask_to_capacity(self.bucket_mask);
     }
 
+    // 添加注释: 从表中删除所有元素, 而不释放后备内存
     /// Removes all elements from the table without freeing the backing memory.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn clear(&mut self) {
+        // 添加注释: 即使其中发生了panic时, 也要确保重置表
         // Ensure that the table is reset even if one of the drops panic
         let self_ = guard(self, |self_| self_.clear_no_drop());
 
@@ -724,6 +863,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 缩小表格以适应`max(self.len(), min_size)`元素
     /// Shrinks the table to fit `max(self.len(), min_size)` elements.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn shrink_to(&mut self, min_size: usize, hasher: impl Fn(&T) -> u64) {
@@ -761,11 +901,13 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 确保至少可以将`其它项`插入表中而不进行重新分配
     /// Ensures that at least `additional` items can be inserted into the table
     /// without reallocation.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn reserve(&mut self, additional: usize, hasher: impl Fn(&T) -> u64) {
         if additional > self.growth_left {
+            // 添加注释: 避免使用`Result::unwrap_or_else`, 因为它会使LLVM IR膨胀
             // Avoid `Result::unwrap_or_else` because it bloats LLVM IR.
             if self
                 .reserve_rehash(additional, hasher, Fallibility::Infallible)
@@ -801,17 +943,21 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         fallibility: Fallibility,
     ) -> Result<(), TryReserveError> {
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
+        // 添加注释: 检查items+additional的结果是否溢出
         let new_items = match self.items.checked_add(additional) {
             Some(new_items) => new_items,
             None => return Err(fallibility.capacity_overflow()),
         };
+        // 添加注释: 根据bucket_mask获取容量
         let full_capacity = bucket_mask_to_capacity(self.bucket_mask);
         if new_items <= full_capacity / 2 {
+            // 添加注释: 如果我们有大量的空闲容量由于DELETE条目而被锁定, 则无需重新分配就地重新哈希就位, 而无需重新分配
             // Rehash in-place without re-allocating if we have plenty of spare
             // capacity that is locked up due to DELETED entries.
             self.rehash_in_place(hasher);
             Ok(())
         } else {
+            // 添加注释: 否则, 保守地将大小调整为至少下一个大小, 以避免将删除内容搅乱成频繁的重复操作
             // Otherwise, conservatively resize to at least the next size up
             // to avoid churning deletes into frequent rehashes.
             self.resize(
@@ -822,12 +968,16 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 适当地重新整理表的内容(即不更改分配).
     /// Rehashes the contents of the table in place (i.e. without changing the
     /// allocation).
     ///
+    // 添加注释: 如果`哈希器`出现紧急情况, 则表的某些内容可能会丢失
     /// If `hasher` panics then some the table's contents may be lost.
     fn rehash_in_place(&mut self, hasher: impl Fn(&T) -> u64) {
         unsafe {
+            // 添加注释: 批量将所有完整控制字节转换为DELETED, 并将所有DELETED控制字节转换为EMPTY.
+            // 这有效地释放了所有包含DELETED条目的存储桶.
             // Bulk convert all full control bytes to DELETED, and all DELETED
             // control bytes to EMPTY. This effectively frees up all buckets
             // containing a DELETED entry.
@@ -837,6 +987,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                 group.store_aligned(self.ctrl(i));
             }
 
+            // 添加注释: 修正尾随控制字节. 有关小于组宽度的表的处理, 请参见set_ctrl中的注释
             // Fix up the trailing control bytes. See the comments in set_ctrl
             // for the handling of tables smaller than the group width.
             if self.buckets() < Group::WIDTH {
@@ -847,6 +998,8 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     .copy_to(self.ctrl(self.buckets()), Group::WIDTH);
             }
 
+            // 添加注释: 如果哈希函数出现紧急情况, 则可以正确清理我们尚未重新定义的所有元素.
+            // 不幸的是, 我们无法保留该元素, 因为我们丢失了它们的哈希值, 并且无法在没有其它panic风险的情况下恢复它
             // If the hash function panics then properly clean up any elements
             // that we haven't rehashed yet. We unfortunately can't preserve the
             // element since we lost their hash and have no way of recovering it
@@ -864,6 +1017,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                 self_.growth_left = bucket_mask_to_capacity(self_.bucket_mask) - self_.items;
             });
 
+            // 添加注释: 在这一点上, DELETED元素是我们尚未重新定义的元素. 找到它们并将它们重新插入其理想位置.
             // At this point, DELETED elements are elements that we haven't
             // rehashed yet. Find them and re-insert them at their ideal
             // position.
@@ -872,13 +1026,17 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     continue;
                 }
                 'inner: loop {
+                    // 添加注释: 散列当前项目
                     // Hash the current item
                     let item = guard.bucket(i);
                     let hash = hasher(item.as_ref());
 
+                    // 添加注释: 寻找合适的放置位置
                     // Search for a suitable place to put it
                     let new_i = guard.find_insert_slot(hash);
 
+                    // 添加注释: 探测通过扫描组中的所有控制字节来进行, 这些字节可能与组大小不匹配.
+                    // 如果新头寸与旧头寸都属于同一组, 则移动它没有任何好处, 我们可以继续进行下一项.
                     // Probing works by scanning through all of the control
                     // bytes in groups, which may not be aligned to the group
                     // size. If both the new and old position fall within the
@@ -893,12 +1051,14 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                         continue 'outer;
                     }
 
+                    // 添加注释: 我们正在将当前商品移至新位置. 将h2写入新位置的控制字节
                     // We are moving the current item to a new position. Write
                     // our H2 to the control byte of the new position.
                     let prev_ctrl = *guard.ctrl(new_i);
                     guard.set_ctrl(new_i, h2(hash));
 
                     if prev_ctrl == EMPTY {
+                        // 添加注释: 如果目标插槽为空, 只需将当前元素移至新插槽并清除旧控制字节
                         // If the target slot is empty, simply move the current
                         // element into the new slot and clear the old control
                         // byte.
@@ -906,6 +1066,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                         guard.bucket(new_i).copy_from_nonoverlapping(&item);
                         continue 'outer;
                     } else {
+                        // 添加注释: 如果目标插槽已被占用, 请交换两个元素, 然后继续处理我们刚刚交换到旧插槽中的元素
                         // If the target slot is occupied, swap the two elements
                         // and then continue processing the element that we just
                         // swapped into the old slot.
@@ -921,6 +1082,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 分配一个具有不同大小的新表, 并将当前表的内容移入其中
     /// Allocates a new table of a different size and moves the contents of the
     /// current table into it.
     fn resize(
@@ -932,16 +1094,19 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         unsafe {
             debug_assert!(self.items <= capacity);
 
+            // 添加注释: 分配并初始化新表
             // Allocate and initialize the new table.
             let mut new_table =
                 Self::fallible_with_capacity(self.alloc.clone(), capacity, fallibility)?;
             new_table.growth_left -= self.items;
             new_table.items = self.items;
 
+            // 添加注释: 哈希函数可能会出现紧急情况, 在这种情况下, 我们只需要释放新表, 而不会删除可能已复制到表中的任何元素.
             // The hash function may panic, in which case we simply free the new
             // table without dropping any elements that may have been copied into
             // it.
             //
+            // 添加注释: 此保护程序还用于在成功时释放旧表, 请参阅此函数底部的注释.
             // This guard is also used to free the old table on success, see
             // the comment at the bottom of this function.
             let mut new_table = guard(ManuallyDrop::new(new_table), |new_table| {
@@ -950,11 +1115,17 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                 }
             });
 
+            // 添加注释: 将所有元素复制到新表中.
             // Copy all elements to the new table.
             for item in self.iter() {
+                // 添加注释: 这可能会引起panic
                 // This may panic.
                 let hash = hasher(item.as_ref());
 
+                // 添加注释: 由于以下原因, 我们可以在此处使用更简单的insert()版本:
+                // - 没有DELETED条目
+                // - 我们知道table中有足够的空间
+                // - 所有元素都是唯一的
                 // We can use a simpler version of insert() here since:
                 // - there are no DELETED entries.
                 // - we know there is enough space in the table.
@@ -964,6 +1135,8 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                 new_table.bucket(index).copy_from_nonoverlapping(&item);
             }
 
+            // 添加注释: 我们成功地复制了所有元素, 而没有panic. 现在, 用新表替换self.
+            // 旧表将释放其内存, 但不会删除项目(因为它们已移至新表中).
             // We successfully copied all elements without panicking. Now replace
             // self with the new table. The old table will have its memory freed but
             // the items will not be dropped (since they have been moved into the
@@ -974,26 +1147,41 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 将新元素插入表中, 并返回其原始存储桶
+    // 添加注释: 这不会检查给定元素是否已存在于表中
     /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn insert(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> Bucket<T> {
         unsafe {
+
+            // 添加注释: 根据哈希值获取可插入位置的插槽的下标
             let mut index = self.find_insert_slot(hash);
 
+            // 添加注释: 如果要更换墓碑, 一旦达到负载系数, 我们就可以避免增加`table`.
+            //         这是可行的, 因为在这种情况下, EMPTY插槽的数量不会改变
             // We can avoid growing the table once we have reached our load
             // factor if we are replacing a tombstone. This works since the
             // number of EMPTY slots does not change in this case.
+            // 添加注释: self.ctrl指针+index得到old_ctrl
+            // 添加注释: 根据要插入位置的索引获取旧值, 用于下而面的逻辑判断
             let old_ctrl = *self.ctrl(index);
+            // 添加注释: 剩余插槽数量为0并且旧值为空, 则表明table需要进行扩容
             if unlikely(self.growth_left == 0 && special_is_empty(old_ctrl)) {
                 self.reserve(1, hasher);
                 index = self.find_insert_slot(hash);
             }
 
+            // 添加注释: 根据控制字节指针和index包装成Bucket
+            // 添加注释: self.ctrl指针-index得到bucket
             let bucket = self.bucket(index);
+            // 添加注释: 判断old_ctrl如果为空, 则调用special_is_empty方法将会返回1, 不为空时将会返回0
             self.growth_left -= special_is_empty(old_ctrl) as usize;
+            // 添加注释: 获取hash值的低7位, 并根据index存入控制字节指针中
             self.set_ctrl(index, h2(hash));
+            // 添加注释: 把value写入到bucket中, value: (K, V)
+            // 添加注释: 如何保证写入到bucket中的value的长度不会超出???
             bucket.write(value);
             self.items += 1;
             bucket
@@ -1063,8 +1251,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
         unsafe {
+            // 根据hash值获取RawIterHash迭代器
             for bucket in self.iter_hash(hash) {
                 let elm = bucket.as_ref();
+                // 添加注释: 获取bucket的不可变引用,并比较是否是要查询的目标,如果是要查询的对象则返回
                 if likely(eq(elm)) {
                     return Some(bucket);
                 }
@@ -1077,6 +1267,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[inline]
     pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
         // Avoid `Option::map` because it bloats LLVM IR.
+        // 添加注释: 根据hash值查找table
         match self.find(hash, eq) {
             Some(bucket) => Some(unsafe { bucket.as_ref() }),
             None => None,
@@ -1114,12 +1305,16 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         self.bucket_mask + 1
     }
 
+    // 添加注释: 返回表中的控制字节数
     /// Returns the number of control bytes in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     fn num_ctrl_bytes(&self) -> usize {
+        // 添加注释: 获取buckets总数量+Group::WIDTH
+        // 添加注释: Group::WIDTH的值是mem::size_of::<Group>()
         self.bucket_mask + 1 + Group::WIDTH
     }
 
+    // 添加注释: 返回此表是否指向容量为0的空单例
     /// Returns whether this table points to the empty singleton with a capacity
     /// of 0.
     #[cfg_attr(feature = "inline-more", inline)]
@@ -1133,6 +1328,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     /// struct, we have to make the `iter` method unsafe.
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn iter(&self) -> RawIter<T> {
+        // 添加注释: 获取table最后一个元素的指针, self.data_end()返回的指针和self.ctrl指针是同一个地址
         let data = Bucket::from_base_index(self.data_end(), 0);
         RawIter {
             iter: RawIterRange::new(self.ctrl.as_ptr(), data, self.buckets()),
@@ -1481,9 +1677,13 @@ impl<T> RawIterRange<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn new(ctrl: *const u8, data: Bucket<T>, len: usize) -> Self {
         debug_assert_ne!(len, 0);
+        // 添加注释: 此处表示ctrl取余Group::WIDTH的结果必须为0
         debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
+
+        // 添加注释: 指向table中最后一个元素的指针+buckets的长度
         let end = ctrl.add(len);
 
+        // 添加注释: 加载第一个Group并前进`ctrl`指向下一个组
         // Load the first group and advance ctrl to point to the next group
         let current_group = Group::load_aligned(ctrl).match_full();
         let next_ctrl = ctrl.add(Group::WIDTH);
@@ -1564,15 +1764,22 @@ impl<T> Iterator for RawIterRange<T> {
     #[cfg_attr(feature = "inline-more", inline)]
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
+            // 添加注释: current_group是BitMask类型的, BitMask是一个元组结构体, 该元组结构体只有一个BitMaskWord类型字段, BitMaskWord是个u16类型
             loop {
+                // 添加注释: `lowest_set_bit`方法返回的是变量`current_group`的`self.0`变量从右起直至遇到1时的0的数量除以1
                 if let Some(index) = self.current_group.lowest_set_bit() {
                     self.current_group = self.current_group.remove_lowest_bit();
+                    // 添加注释: 通过`self.data`指针减去`index`大小, 然后将对应的指针转为值
                     return Some(self.data.next_n(index));
                 }
 
+                // 添加注释: 当next_ctrl指针地址大于或等于end指针地址时, 将返回None
                 if self.next_ctrl >= self.end {
                     return None;
                 }
+
+                // 添加注释: 我们可能会读取过去的self.end直到下一个组边界, 但这很好, 因为它仅出现在
+                // 小于组大小的表上, 其中尾随控制字节均为EMPTY. 在较大的表上, 保证self.end与Group大小对齐(因为表是2的幂次方)
 
                 // We might read past self.end up to the next group boundary,
                 // but this is fine because it only occurs on tables smaller
@@ -1919,13 +2126,16 @@ pub struct RawIterHash<'a, T, A: Allocator + Clone> {
     table: &'a RawTable<T, A>,
 
     // The top 7 bits of the hash.
+    // 添加注释: hash值的高7位
     h2_hash: u8,
 
     // The sequence of groups to probe in the search.
+    // 添加注释: 探测Group序列
     probe_seq: ProbeSeq,
 
     group: Group,
 
+    // 添加注释: 组中的元素具有匹配的h2-hash
     // The elements within the group with a matching h2-hash.
     bitmask: BitMaskIter,
 }
@@ -1933,9 +2143,15 @@ pub struct RawIterHash<'a, T, A: Allocator + Clone> {
 impl<'a, T, A: Allocator + Clone> RawIterHash<'a, T, A> {
     fn new(table: &'a RawTable<T, A>, hash: u64) -> Self {
         unsafe {
+            // 添加注释: 获取`hash`的高7位
             let h2_hash = h2(hash);
+
+            // 添加注释: 构建根据hash值进行线性探测
             let probe_seq = table.probe_seq(hash);
+            // 添加注释: 根据指定指针地址加载Group, 一次性加载16个字节
             let group = Group::load(table.ctrl(probe_seq.pos));
+            // 添加注释: 查看该group中的16个字节哪个字节能匹配上h2_hash, 并返回BitMask
+            // 添加注释: 如果能匹配上, 则返回的RawIterHash中的元组不等于0
             let bitmask = group.match_byte(h2_hash).into_iter();
 
             RawIterHash {
@@ -1955,15 +2171,22 @@ impl<'a, T, A: Allocator + Clone> Iterator for RawIterHash<'a, T, A> {
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
+                // 添加注释: self.bitmask.next()方法将会按位读取, 获取`BitMaskIter`每一位的值
                 if let Some(bit) = self.bitmask.next() {
+                    // 添加注释: bit变量值只会是1或0
                     let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
                     let bucket = self.table.bucket(index);
                     return Some(bucket);
                 }
+                // 添加注释: 获取group中所有为空的字节, 如果存在空则返回None
+                // 添加注释: 字节为0b1111_1111则代表EMPTY
+                // 添加注释: 如果下面的if条件成功, 则代表当前根据ctrl加载出来的16字节全是空
                 if likely(self.group.match_empty().any_bit_set()) {
                     return None;
                 }
+                // 添加注释: 探测序列移动
                 self.probe_seq.move_next(self.table.bucket_mask);
+                // 添加注释: 根据移动后的序列定位加载16字节数据
                 self.group = Group::load(self.table.ctrl(self.probe_seq.pos));
                 self.bitmask = self.group.match_byte(self.h2_hash).into_iter();
             }

@@ -39,18 +39,23 @@ impl BitMask {
         self.0 & mask == 0
     }
 
+    // 添加注释: 返回删除了最低位的新`BitMask`
     /// Returns a new `BitMask` with the lowest bit removed.
     #[inline]
     #[must_use]
     pub fn remove_lowest_bit(self) -> Self {
+        // 添加注释: 取出self.0 和 self.0 - 1 进行&位运算
         BitMask(self.0 & (self.0 - 1))
     }
+
+    // 添加注释: 返回`BitMask`是否至少有一个设置位
     /// Returns whether the `BitMask` has at least one set bit.
     #[inline]
     pub fn any_bit_set(self) -> bool {
         self.0 != 0
     }
 
+    // 添加注释: 如果存在, 将返回BitMask中的第一个置位
     /// Returns the first set bit in the `BitMask`, if there is one.
     #[inline]
     pub fn lowest_set_bit(self) -> Option<usize> {
@@ -61,11 +66,15 @@ impl BitMask {
         }
     }
 
+    // 添加注释: 如果存在, 返回BitMask中的第一个置位. 位掩码不能为空
     /// Returns the first set bit in the `BitMask`, if there is one. The
     /// bitmask must not be empty.
     #[inline]
     #[cfg(feature = "nightly")]
     pub unsafe fn lowest_set_bit_nonzero(self) -> usize {
+        // 添加注释: `intrinsics::cttz_nonzero`函数将会返回从右起直至遇到1时的0的个数
+        // 添加注释: 传入`0b0011_1100_u8`时, 将会返回2, 因为从右起直至遇到1时的0的个数为2
+        // 添加注释: 获取`self.0`变量从右起直至遇到1时的0的数量除以1
         intrinsics::cttz_nonzero(self.0) as usize / BITMASK_STRIDE
     }
     #[inline]
@@ -106,6 +115,7 @@ impl IntoIterator for BitMask {
     }
 }
 
+// 添加注释: 对BitMask的内容进行迭代, 返回设置位的索引
 /// Iterator over the contents of a `BitMask`, returning the indicies of set
 /// bits.
 pub struct BitMaskIter(BitMask);
@@ -115,6 +125,27 @@ impl Iterator for BitMaskIter {
 
     #[inline]
     fn next(&mut self) -> Option<usize> {
+        // ---------
+        // 0111 1111
+        // 0/1=0                 ; lowest_set_bit
+        // 0111 1111
+        // &
+        // 0111 1110 = 0111 1110 ; remove_lowest_bit
+        //
+        // ---------
+        // 0111 1110
+        // 1/1=1
+        // 0111 1110
+        // &
+        // 0111 1101 = 0111 1100
+        //
+        // ---------
+        // 0111 1100
+        // 2/1=2
+        // 0111 1100
+        // &
+        // 0111 1011 = 0111 1000
+
         let bit = self.0.lowest_set_bit()?;
         self.0 = self.0.remove_lowest_bit();
         Some(bit)
