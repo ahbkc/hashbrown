@@ -382,6 +382,7 @@ impl<T> Bucket<T> {
         if mem::size_of::<T>() == 0 {
             self.ptr.as_ptr() as usize - 1
         } else {
+            // 获取两个指针地址的差值
             offset_from(base.as_ptr(), self.ptr.as_ptr())
         }
     }
@@ -522,17 +523,27 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         // 添加注释: is_power_of_two函数用于判断`当且仅当self == 2 ^ k约k时，才返回true`
         debug_assert!(buckets.is_power_of_two());
 
-        // 添加注释: 根据buckets计算布局
+        // 添加注释: 此处需要明确layout和ctrl_offset的值是如何确定的
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let (layout, ctrl_offset) = match calculate_layout::<T>(buckets) {
             Some(lco) => lco,
             None => return Err(fallibility.capacity_overflow()),
         };
         // 添加注释: 根据分配器和指定的内存布局分配内存.
+        // layout布局中的size_对应的就是申请内存分配的大小
         let ptr: NonNull<u8> = match do_alloc(&alloc, layout) {
             Ok(block) => block.cast(),
             Err(_) => return Err(fallibility.alloc_err(layout)),
         };
+        // 已确定申请后的内存指针在调用add时, 偏移的是1个字节
+        // 例: 分配的地址是0x1fe8b0, ptr = 0x1fe8b0, ptr.as_ptr().add(1) = 0x1fe8b1
+        // 添加注释: 此处需要明确控制字节的长度是如何确定的
+        // 例: Layout { size_: 144, align_: 16 }, ctrl_offset = 64, buckets = 64
+        // 则ctrl = 0x1fe8b0 + 64 = 0x1FE8F0
+        // 也就是说ctrl指向的是64字节外的, 64个字节是buckets的大小
+        // 按上述数据算, 64字节外的就是控制字节, 控制字节就是144 - 64 = 80
+        // 像是哈希后的key值就是保存在了控制字节中, 因为ctrl指向的就是控制字节, 当ctrl进行加运算就是指向控制字节
+        // 当ctrl进行减运算就是指向bucket
         let ctrl = NonNull::new_unchecked(ptr.as_ptr().add(ctrl_offset));
         Ok(Self {
             ctrl,
@@ -603,6 +614,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     /// Returns pointer to one past last element of data table.
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn data_end(&self) -> NonNull<T> {
+        // 添加注释: 将self.ctrl 转换为NonNull<T>, 重点是指针类型转换
         NonNull::new_unchecked(self.ctrl.as_ptr() as *mut T)
     }
 
@@ -610,6 +622,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[cfg_attr(feature = "inline-more", inline)]
     #[cfg(feature = "nightly")]
     pub unsafe fn data_start(&self) -> *mut T {
+        // 添加注释: 获取ctrl指向内存的起始分配地址, self.ctrl的指针就是 ptr + self.buckets的位置
         self.data_end().as_ptr().wrapping_sub(self.buckets())
     }
 
@@ -638,30 +651,41 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         Bucket::from_base_index(self.data_end(), index)
     }
 
+    // 添加注释: 从表中清除元素而不删除它
     /// Erases an element from the table without dropping it.
     #[cfg_attr(feature = "inline-more", inline)]
     #[deprecated(since = "0.8.1", note = "use erase or remove instead")]
     pub unsafe fn erase_no_drop(&mut self, item: &Bucket<T>) {
+        // 添加注释: 根据bucket获取在ctrl中的索引
         let index = self.bucket_index(item);
+        // 添加注释: 判断对应控制字节是否是完整的bucket
         debug_assert!(is_full(*self.ctrl(index)));
+        // 添加注释: 获取前一个Group
         let index_before = index.wrapping_sub(Group::WIDTH) & self.bucket_mask;
+        // 添加注释: 查看前一个Group是否匹配为EMPTY
         let empty_before = Group::load(self.ctrl(index_before)).match_empty();
+        // 添加注释: 查看当前Group是否匹配为EMPTY
         let empty_after = Group::load(self.ctrl(index)).match_empty();
 
+        // 添加注释: 如果我们在Group::WIDTH完整或已删除单元格的连续块内, 则尝试插入时探测窗口可能已看到完整块.
+        // 因此, 我们需要将该块保留为非空, 以便查找将继续搜索到下一个探测窗口
         // If we are inside a continuous block of Group::WIDTH full or deleted
         // cells then a probe window may have seen a full block when trying to
         // insert. We therefore need to keep that block non-empty so that
         // lookups will continue searching to the next probe window.
         //
+        // 添加注释: 注意, 在这种情况下, `leading_zeros`指的是前导零数目, 而`trailing_zeros`指的是尾随零数目
         // Note that in this context `leading_zeros` refers to the bytes at the
         // end of a group, while `trailing_zeros` refers to the bytes at the
         // begining of a group.
+        // 添加注释: 如果前一个Group的前导零+当前Group的尾导零大于或等于Group::WIDTH时,将当前index标记为DELETED
         let ctrl = if empty_before.leading_zeros() + empty_after.trailing_zeros() >= Group::WIDTH {
             DELETED
         } else {
             self.growth_left += 1;
             EMPTY
         };
+        // 添加注释: 改变当前控制字节指针+index地址的值
         self.set_ctrl(index, ctrl);
         self.items -= 1;
     }
@@ -695,7 +719,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[allow(clippy::needless_pass_by_value)]
     #[allow(deprecated)]
     pub unsafe fn remove(&mut self, item: Bucket<T>) -> T {
+        // 添加注释: 根据查找到的bucket获取该bucket在控制字节中的对应位置,
+        // 需要将该bucket对应的位置根据条件标记为DELTED或EMPTY, 并将items减1
         self.erase_no_drop(&item);
+        // 添加注释: 读取bucket中存储的值
         item.read()
     }
 
@@ -1224,6 +1251,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
 
             // 0x82b750 - 0x82b558 = 21 * 24
 
+            // 添加注释: 此处需要标明bucket位置和group位置的关系
+            // 当查找到了index
+            //      group将会根据  self.ctrl + index 获取, group占用的是16个字节大小, group指向的是控制字节
+            //      bucket将会根据 self.ctrl - index 获取, bucket占用的是一个元素大小, bucket指向的是存储元素
 
             // 添加注释: 根据控制字节指针和index包装成Bucket
             // 添加注释: self.ctrl指针-index得到bucket

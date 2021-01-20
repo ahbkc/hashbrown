@@ -87,6 +87,7 @@ impl BitMask {
         self.trailing_zeros()
     }
 
+    // 添加注释: 返回BitMask中尾随零的数量
     /// Returns the number of trailing zeroes in the `BitMask`.
     #[inline]
     pub fn trailing_zeros(self) -> usize {
@@ -102,6 +103,7 @@ impl BitMask {
         }
     }
 
+    // 添加注释: 返回`BitMask`中前导零的数目
     /// Returns the number of leading zeroes in the `BitMask`.
     #[inline]
     pub fn leading_zeros(self) -> usize {
