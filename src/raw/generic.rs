@@ -2,6 +2,8 @@ use super::bitmask::BitMask;
 use super::EMPTY;
 use core::{mem, ptr};
 
+// 添加注释: 使用native word size作为Group size.
+// 添加注释: 在32位架构上使用64位Group大小最终将会变得更加昂贵, 因为需要模拟移位和乘法
 // Use the native word size as the group size. Using a 64-bit group size on
 // a 32-bit architecture will just end up being more expensive because
 // shifts and multiplies will need to be emulated.

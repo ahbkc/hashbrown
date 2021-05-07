@@ -52,11 +52,13 @@ impl Group {
         Group(x86::_mm_loadu_si128(ptr as *const _))
     }
 
+    // 添加注释: 从给定地址加载一组字节, 该地址必须与`mem::align_of::<Group>()对齐`
     /// Loads a group of bytes starting at the given address, which must be
     /// aligned to `mem::align_of::<Group>()`.
     #[inline]
     #[allow(clippy::cast_ptr_alignment)]
     pub unsafe fn load_aligned(ptr: *const u8) -> Self {
+        // 判断传入的指针地址是否对齐
         // FIXME: use align_offset once it stabilizes
         debug_assert_eq!(ptr as usize & (mem::align_of::<Self>() - 1), 0);
         // 添加注释: 一次性读取16个字节进入mmx寄存器
@@ -131,7 +133,7 @@ impl Group {
             clippy::cast_possible_truncation
         )]
         unsafe {
-            // 添加注释: `_mm_movemask_epi8`函数将返回传入变量中每个元素的最高有效位掩码
+            // 添加注释: `_mm_movemask_epi8`函数将会返回传入变量中每个元素的最高有效位掩码
             // 添加注释: x86::_mm_movemask_epi8会将传入的16字节的数据先转为16个1位的,
             // 添加注释: `pmovmskb`会将mm寄存器中组合的字节整型数的最高比特位按顺序保存到指定的寄存器中
             //          rax[0] <== XMM[7], rax[1] <== XMM[15]

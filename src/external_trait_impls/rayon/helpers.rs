@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
+// 添加注释: 用于收集并行迭代器到中介的帮助函数
 /// Helper for collecting parallel iterators to an intermediary
 pub(super) fn collect<I: IntoParallelIterator>(iter: I) -> (LinkedList<Vec<I::Item>>, usize) {
     let list = iter

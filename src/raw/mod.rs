@@ -83,11 +83,13 @@ unsafe fn offset_from<T>(to: *const T, from: *const T) -> usize {
     (to as usize - from as usize) / mem::size_of::<T>()
 }
 
-// 添加注释: 内存分配错误应返回错误还是终止
+// 添加注释: 内存分配错误应返回错误还是终止指示的Enum
 /// Whether memory allocation errors should return an error or abort.
 #[derive(Copy, Clone)]
 enum Fallibility {
+    // 添加注释: 易犯错误
     Fallible,
+    // 添加注释: 绝对可靠
     Infallible,
 }
 
@@ -446,7 +448,8 @@ pub struct RawTable<T, A: Allocator + Clone> {
 
     // [Padding], T1, T2, ..., Tlast, C1, C2, ...
     //                                ^ points here
-    // 添加注释: 指向数据表最后一个元素的指针
+    // 添加注释: 指向第一个控制字节位置
+    // 控制字节中存储的是key哈希后值的高7位, 控制字节前的就是元素存储, 写入的就是(key, value)
     ctrl: NonNull<u8>,
 
     // Number of elements that can be inserted before we need to grow the table
@@ -535,15 +538,14 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             Ok(block) => block.cast(),
             Err(_) => return Err(fallibility.alloc_err(layout)),
         };
-        // 已确定申请后的内存指针在调用add时, 偏移的是1个字节
-        // 例: 分配的地址是0x1fe8b0, ptr = 0x1fe8b0, ptr.as_ptr().add(1) = 0x1fe8b1
+        // 例: T类型的大小是(&'static str, i32), 字节大小为24
+        // 已确定申请后的内存指针在调用add时, 偏移的是T类型大小个字节
         // 添加注释: 此处需要明确控制字节的长度是如何确定的
-        // 例: Layout { size_: 144, align_: 16 }, ctrl_offset = 64, buckets = 64
-        // 则ctrl = 0x1fe8b0 + 64 = 0x1FE8F0
-        // 也就是说ctrl指向的是64字节外的, 64个字节是buckets的大小
-        // 按上述数据算, 64字节外的就是控制字节, 控制字节就是144 - 64 = 80
-        // 像是哈希后的key值就是保存在了控制字节中, 因为ctrl指向的就是控制字节, 当ctrl进行加运算就是指向控制字节
-        // 当ctrl进行减运算就是指向bucket
+        // 例: buckets = 64, Layout { size_: 1616, align_: 16 }, ctrl_offset = 1536
+        // 则ctrl = 0x49ed30 + 1536 = 0x49f330
+        // 也就是说ctrl指向的是1536字节外的, 64个24字节是buckets的大小
+        // 按上述数据算, 1536字节外的就是控制字节, 控制字节大小就是1616 - 1536 = 80
+        // 像是哈希后的key值就是保存在了控制字节中, 因为ctrl指向的就是控制字节, 当ctrl进行加运算就是指向控制字节, 当ctrl进行减运算就是指向bucket
         let ctrl = NonNull::new_unchecked(ptr.as_ptr().add(ctrl_offset));
         Ok(Self {
             ctrl,
@@ -597,6 +599,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 在不删除任何条目的情况下取消分配表
     /// Deallocates the table without dropping any entries.
     #[cfg_attr(feature = "inline-more", inline)]
     unsafe fn free_buckets(&mut self) {
@@ -605,6 +608,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             Some(lco) => lco,
             None => hint::unreachable_unchecked(),
         };
+        // 调用`deallocate`函数用于释放内存
         self.alloc.deallocate(
             NonNull::new_unchecked(self.ctrl.as_ptr().sub(ctrl_offset)),
             layout,
@@ -660,7 +664,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         let index = self.bucket_index(item);
         // 添加注释: 判断对应控制字节是否是完整的bucket
         debug_assert!(is_full(*self.ctrl(index)));
-        // 添加注释: 获取前一个Group
+        // 添加注释: 获取前一个Group, 如果有的话, 如果没有前一个Group则还是取的当前的Group
         let index_before = index.wrapping_sub(Group::WIDTH) & self.bucket_mask;
         // 添加注释: 查看前一个Group是否匹配为EMPTY
         let empty_before = Group::load(self.ctrl(index_before)).match_empty();
@@ -680,6 +684,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         // begining of a group.
         // 添加注释: 如果前一个Group的前导零+当前Group的尾导零大于或等于Group::WIDTH时,将当前index标记为DELETED
         let ctrl = if empty_before.leading_zeros() + empty_after.trailing_zeros() >= Group::WIDTH {
+            // 添加注释: 如果有值则标记为DELETED
             DELETED
         } else {
             self.growth_left += 1;
@@ -690,6 +695,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         self.items -= 1;
     }
 
+    // 添加注释: 从表中擦除一个元素, 将其放到适当的位置
     /// Erases an element from the table, dropping it in place.
     #[cfg_attr(feature = "inline-more", inline)]
     #[allow(clippy::needless_pass_by_value)]
@@ -700,6 +706,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         item.drop();
     }
 
+    // 添加注释: 从表中查找并删除元素, 然后将其放到适当的位置. 如果找到元素, 则返回true
     /// Finds and erases an element from the table, dropping it in place.
     /// Returns true if an element was found.
     #[cfg(feature = "raw")]
@@ -714,6 +721,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 从表中删除一个元素, 并将其返回
     /// Removes an element from the table, returning it.
     #[cfg_attr(feature = "inline-more", inline)]
     #[allow(clippy::needless_pass_by_value)]
@@ -726,6 +734,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         item.read()
     }
 
+    // 添加注释: 从表中查找并删除一个元素, 然后将其返回
     /// Finds and removes an element from the table, returning it.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn remove_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<T> {
@@ -850,6 +859,8 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // 3.如果b等于0则代表该插槽中已经存有值, 如果b不等于0则代表该插槽当前为空
                     // 4.如果插槽为空则查看该字节右侧的零的数量, 例: b = 0b1111 1110, 则右侧零的数量为1, 则bit = 1/1 = 1
 
+                    // 添加注释: 如果出现了哈希冲突, 则会向后找到空位后存入
+
                     // `probe_seq.pos + bit` 表示对应group的位置的第几位
                     // `(probe_seq.pos + bit) & self.bucket_mask`
                     // 例:
@@ -872,7 +883,8 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // control bytes (containing EMPTY).
                     // 添加注释: `is_full`函数检查控制字节是否代表完整的存储桶(高位清零)
                     if unlikely(is_full(*self.ctrl(result))) {
-                        // 添加注释: 检测控制字节的最高位是否为1, 如果为1则进入当前if内
+                        // 添加注释: 检测控制字节的最高位是否为0, 如果为0则进入当前if内
+                        // 添加注释: 最高位为零代表该控制位对应的Bucket不为空
                         debug_assert!(self.bucket_mask < Group::WIDTH);
                         debug_assert_ne!(probe_seq.pos, 0);
                         // 添加注释: 根据指针地址加载16个字节,然后获取每个字节的最高位,并将结果放置在u16类型的变量中
@@ -884,11 +896,12 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                             .match_empty_or_deleted()
                             .lowest_set_bit_nonzero();
                     } else {
+                        // 添加注释: 表示当前探测到的控制位对应的Bucket是空的
                         return result;
                     }
                 }
             }
-            // 添加注释: 深测序列向下移动
+            // 添加注释: 探测序列向下移动
             // 添加注释: 当当前Group都存有值时, 将继续向下探测
             probe_seq.move_next(self.bucket_mask);
         }
@@ -982,6 +995,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 尝试确保至少有'其它'项可以插入表中, 而无需重新分配.
     /// Tries to ensure that at least `additional` items can be inserted into
     /// the table without reallocation.
     #[cfg_attr(feature = "inline-more", inline)]
@@ -997,6 +1011,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 离线慢速路径
     /// Out-of-line slow path for `reserve` and `try_reserve`.
     #[cold]
     #[inline(never)]
@@ -1264,36 +1279,44 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
             // 添加注释: 获取hash值的低7位, 并根据index存入控制字节指针中
             self.set_ctrl(index, h2(hash));
             // 添加注释: 把value写入到bucket中, value: (K, V)
-            // 添加注释: 如何保证写入到bucket中的value的长度不会超出???
-            // self.ctrl指向的底层数组就是按value的大小创建对应的数组, 例: [size_of_value(value); 64], 所以单个元素存储value是满足的
+            // bucket是ptr转换类型后的指针, 如果bucket中存储的数据大小是24, 则在将ptr转换为bucket时, bucket指向指针对应的指针大小就是24字节
             bucket.write(value);
             self.items += 1;
             bucket
         }
     }
 
+    // 添加注释: 在表中插入一个新元素, 并返回对其的可变引用
     /// Inserts a new element into the table, and returns a mutable reference to it.
     ///
+    // 添加注释: 这不会检查给定元素是否已存在于表中
     /// This does not check if the given element already exists in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn insert_entry(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &mut T {
         unsafe { self.insert(hash, value, hasher).as_mut() }
     }
 
+    // 添加注释: 在不扩大表的情况下, 将新元素插入表中
     /// Inserts a new element into the table, without growing the table.
     ///
+    // 添加注释: 表中必须有足够的空间来插入新元素
     /// There must be enough space in the table to insert the new element.
     ///
+    // 添加注释: 这不会检查给定元素是否已存在于表中
     /// This does not check if the given element already exists in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     #[cfg(any(feature = "raw", feature = "rustc-internal-api"))]
     pub fn insert_no_grow(&mut self, hash: u64, value: T) -> Bucket<T> {
         unsafe {
+            // 添加注释: 根据hash值获取探测到的下标
             let index = self.find_insert_slot(hash);
+            // 添加注释: 根据下标获取bucket
             let bucket = self.bucket(index);
 
+            // 添加注释: 如果要替换DELETED条目, 则不需要更新负载计数器
             // If we are replacing a DELETED entry then we don't need to update
             // the load counter.
+            // 添加注释: 获取对应的控制字节数据
             let old_ctrl = *self.ctrl(index);
             self.growth_left -= special_is_empty(old_ctrl) as usize;
 
@@ -1335,11 +1358,12 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
         unsafe {
-            // 根据hash值获取RawIterHash迭代器
+            // 根据hash值获取RawIterHash迭代器, 根据hash值高7位查找
             for bucket in self.iter_hash(hash) {
                 let elm = bucket.as_ref();
                 // 添加注释: 获取bucket的不可变引用,并比较是否是要查询的目标,如果是要查询的对象则返回
                 if likely(eq(elm)) {
+                    // 比较key是否相同, key相同代表查找到了
                     return Some(bucket);
                 }
             }
@@ -1479,6 +1503,7 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
         }
     }
 
+    // 添加注释: 将表转换为原始分配. 在释放分配之前, 应该使用`RawIter`删除表的内容
     /// Converts the table into a raw allocation. The contents of the table
     /// should be dropped using a `RawIter` before freeing the allocation.
     #[cfg_attr(feature = "inline-more", inline)]
@@ -1523,10 +1548,12 @@ impl<T: Clone, A: Allocator + Clone> Clone for RawTable<T, A> {
                 );
 
                 new_table.clone_from_spec(self, |new_table| {
+                    // 添加注释: 我们需要释放分配给新表的内存
                     // We need to free the memory allocated for the new table.
                     new_table.free_buckets();
                 });
 
+                // 添加注释: 返回新创建的表
                 // Return the newly created table.
                 ManuallyDrop::into_inner(new_table)
             }
@@ -1765,6 +1792,7 @@ impl<T> RawIterRange<T> {
         debug_assert_eq!(ctrl as usize % Group::WIDTH, 0);
 
         // 添加注释: 指向table中最后一个元素的指针+buckets的长度
+        // 添加注释: 指向table表内存的最后一个地址, 也就是最后一个控制字节的地址
         let end = ctrl.add(len);
 
         // 添加注释: 加载第一个Group并前进`ctrl`指向下一个组
@@ -2233,10 +2261,11 @@ impl<'a, T, A: Allocator + Clone> RawIterHash<'a, T, A> {
             // 添加注释: 构建根据hash值进行线性探测
             // insert数据获取插槽位置时, 构建ProbeSeq就是调用的probe_seq方法, 所以查找时也需要是相同的处理
             let probe_seq = table.probe_seq(hash);
-            // 添加注释: 根据指定指针地址加载Group, 一次性加载16个字节
+            // 添加注释: 根据指定指针地址加载Group, 一次性加载16个控制字节
             let group = Group::load(table.ctrl(probe_seq.pos));
             // 添加注释: 查看该group中的16个字节哪个字节能匹配上h2_hash, 并返回BitMask
-            // 添加注释: 如果能匹配上, 则返回的RawIterHash中的元组不等于0
+            // 添加注释: 如果能匹配上, 则返回的RawIterHash中的元组值不等于0, 返回的迭代器将返回匹配到的hash值的位
+            // 例: group.match_byte(hash)返回的结果为: 0000_0000_0000_0100, 代表第三位数匹配到了hash值
             let bitmask = group.match_byte(h2_hash).into_iter();
 
             RawIterHash {
@@ -2256,11 +2285,14 @@ impl<'a, T, A: Allocator + Clone> Iterator for RawIterHash<'a, T, A> {
     fn next(&mut self) -> Option<Bucket<T>> {
         unsafe {
             loop {
-                // 添加注释: self.bitmask.next()方法将会按位读取
+                // 添加注释: self.bitmask.next()方法将会按位读取匹配到的下标
+                // 例: self.bitmask = 0000_0000_0000_0100, 则调用next方法将会返回2,
+                // 然后self.bitmask被置为0
                 if let Some(bit) = self.bitmask.next() {
                     // 不进入此条件内则代表当前group没有匹配到hash值
                     // 添加注释: 同插入时相同的处理, 获取index值
                     let index = (self.probe_seq.pos + bit) & self.table.bucket_mask;
+                    // 添加注释: 根据下标获取bucket
                     let bucket = self.table.bucket(index);
                     return Some(bucket);
                 }

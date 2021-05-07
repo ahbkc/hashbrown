@@ -1141,9 +1141,11 @@ where
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         let hash = make_insert_hash::<K, S>(&self.hash_builder, &k);
+        // 添加注释: 1.当出现哈希冲突, 即不同的key, 但是hash值相同, 这种情况下调用get_mut方法将会返回None
         if let Some((_, item)) = self.table.get_mut(hash, equivalent_key(&k)) {
             Some(mem::replace(item, v))
         } else {
+            // 添加注释: 2.哈希冲突出现时, 会调用insert方法进行插入操作
             self.table
                 .insert(hash, (k, v), make_hasher::<K, _, V, S>(&self.hash_builder));
             None

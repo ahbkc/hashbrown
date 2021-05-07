@@ -1,6 +1,7 @@
 // Extracted from the scopeguard crate
 use core::ops::{Deref, DerefMut};
 
+// 添加注释: 用于构建范围守卫, 结构体需要传入value和dropfn, 用于在离开范围时进行调用的
 pub struct ScopeGuard<T, F>
 where
     F: FnMut(&mut T),

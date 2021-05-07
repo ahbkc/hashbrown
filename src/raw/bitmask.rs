@@ -63,9 +63,11 @@ impl BitMask {
     /// Returns the first set bit in the `BitMask`, if there is one.
     #[inline]
     pub fn lowest_set_bit(self) -> Option<usize> {
+        // 添加注释: 1.因为Group::load函数加载的是128位, 也就是16个字节, 16个字节对应16个元素, 只有当这16个元素都有值时self.0才会等于0
         if self.0 == 0 {
             None
         } else {
+            // 添加注释: 2.否则
             Some(unsafe { self.lowest_set_bit_nonzero() })
         }
     }

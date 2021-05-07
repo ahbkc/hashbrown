@@ -1,6 +1,7 @@
 mod size_hint {
     use core::cmp;
 
+    // 添加注释: 大概是为了防止拒绝服务攻击而存在
     /// This presumably exists to prevent denial of service attacks.
     ///
     /// Original discussion: https://github.com/serde-rs/serde/issues/1114.

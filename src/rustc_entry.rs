@@ -11,6 +11,7 @@ where
     S: BuildHasher,
     A: Allocator + Clone,
 {
+    // 添加注释: 获取Map中给定key所对应的条目, 以进行直接操作
     /// Gets the given key's corresponding entry in the map for in-place manipulation.
     ///
     /// # Examples
@@ -64,9 +65,11 @@ pub enum RustcEntry<'a, K, V, A = Global>
 where
     A: Allocator + Clone,
 {
+    // 添加注释: 占用的条目
     /// An occupied entry.
     Occupied(RustcOccupiedEntry<'a, K, V, A>),
 
+    // 添加注释: 空缺的条目
     /// A vacant entry.
     Vacant(RustcVacantEntry<'a, K, V, A>),
 }
