@@ -116,7 +116,7 @@ pub struct HashSet<T, S = DefaultHashBuilder, A: Allocator + Clone = Global> {
     pub(crate) map: HashMap<T, (), S, A>,
 }
 
-impl<T: Clone, S: Clone> Clone for HashSet<T, S> {
+impl<T: Clone, S: Clone, A: Allocator + Clone> Clone for HashSet<T, S, A> {
     fn clone(&self) -> Self {
         HashSet {
             map: self.map.clone(),
@@ -452,10 +452,14 @@ impl<T, S> HashSet<T, S, Global> {
 
 impl<T, S, A> HashSet<T, S, A>
 where
-    T: Eq + Hash,
-    S: BuildHasher,
     A: Allocator + Clone,
 {
+    /// Returns a reference to the underlying allocator.
+    #[inline]
+    pub fn allocator(&self) -> &A {
+        self.map.allocator()
+    }
+
     /// Creates a new empty hash set which will use the given hasher to hash
     /// keys.
     ///
@@ -1106,6 +1110,15 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.iter()).finish()
+    }
+}
+
+impl<T, S, A> From<HashMap<T, (), S, A>> for HashSet<T, S, A>
+where
+    A: Allocator + Clone,
+{
+    fn from(map: HashMap<T, (), S, A>) -> Self {
+        Self { map }
     }
 }
 
@@ -2041,6 +2054,23 @@ mod test_set {
     }
 
     #[test]
+    fn test_from_map() {
+        let mut a = crate::HashMap::new();
+        a.insert(1, ());
+        a.insert(2, ());
+        a.insert(3, ());
+        a.insert(4, ());
+
+        let a: HashSet<_> = a.into();
+
+        assert_eq!(a.len(), 4);
+        assert!(a.contains(&1));
+        assert!(a.contains(&2));
+        assert!(a.contains(&3));
+        assert!(a.contains(&4));
+    }
+
+    #[test]
     fn test_from_iter() {
         let xs = [1, 2, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -2251,5 +2281,25 @@ mod test_set {
         let mut set = EMPTY_SET.clone();
         set.insert(19);
         assert!(set.contains(&19));
+    }
+
+    #[test]
+    fn rehash_in_place() {
+        let mut set = HashSet::new();
+
+        for i in 0..224 {
+            set.insert(i);
+        }
+
+        assert_eq!(
+            set.capacity(),
+            224,
+            "The set must be at or close to capacity to trigger a re hashing"
+        );
+
+        for i in 100..1400 {
+            set.remove(&(i - 100));
+            set.insert(i);
+        }
     }
 }

@@ -9,7 +9,7 @@ extern crate test;
 use test::{black_box, Bencher};
 
 use hashbrown::hash_map::DefaultHashBuilder;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use std::{
     collections::hash_map::RandomState,
     sync::atomic::{self, AtomicUsize},
@@ -86,7 +86,7 @@ macro_rules! bench_insert {
             b.iter(|| {
                 m.clear();
                 for i in ($keydist).take(SIZE) {
-                    m.insert(i, DropType(i));
+                    m.insert(i, (DropType(i), [i; 20]));
                 }
                 black_box(&mut m);
             });
@@ -103,6 +103,31 @@ bench_suite!(
     insert_std_highbits,
     insert_ahash_random,
     insert_std_random
+);
+
+macro_rules! bench_grow_insert {
+    ($name:ident, $maptype:ident, $keydist:expr) => {
+        #[bench]
+        fn $name(b: &mut Bencher) {
+            b.iter(|| {
+                let mut m = $maptype::default();
+                for i in ($keydist).take(SIZE) {
+                    m.insert(i, DropType(i));
+                }
+                black_box(&mut m);
+            })
+        }
+    };
+}
+
+bench_suite!(
+    bench_grow_insert,
+    grow_insert_ahash_serial,
+    grow_insert_std_serial,
+    grow_insert_ahash_highbits,
+    grow_insert_std_highbits,
+    grow_insert_ahash_random,
+    grow_insert_std_random
 );
 
 macro_rules! bench_insert_erase {
@@ -277,4 +302,30 @@ fn clone_from_large(b: &mut Bencher) {
         m2.clone_from(&m);
         black_box(&mut m2);
     })
+}
+
+#[bench]
+fn rehash_in_place(b: &mut Bencher) {
+    b.iter(|| {
+        let mut set = HashSet::new();
+
+        // Each loop triggers one rehash
+        for _ in 0..10 {
+            for i in 0..224 {
+                set.insert(i);
+            }
+
+            assert_eq!(
+                set.capacity(),
+                224,
+                "The set must be at or close to capacity to trigger a re hashing"
+            );
+
+            for i in 100..1400 {
+                set.remove(&(i - 100));
+                set.insert(i);
+            }
+            set.clear();
+        }
+    });
 }
