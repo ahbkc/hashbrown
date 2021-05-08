@@ -200,6 +200,7 @@ impl ProbeSeq {
         // 添加注释: stride+=Group::WIDTH, 步长为Group::WIDTH
         // 添加注释: self.stride代表步长, Group::load加载时的长度也是为Group::WIDTH
         self.stride += Group::WIDTH;
+        // 添加注释: self.stride初始为0, 前一行代码改变了self.stride值, 则下一行代码则将会移动self.pos
         self.pos += self.stride;
         // 添加注释: self.pos是用于加载Group时用于和self.ctrl计算的值(Group::load(self.ctrl(probe_seq.pos))), 而bucket_mask则代表当前表的容量,
         // 当在loop中调用move_next方法时, stride会递增为stride=self.stride+Group::WIDTH, 而递增步长时并没有判断表中的bucket_mask的实际容量,
@@ -867,6 +868,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     // probe_seq.pos = 21, bit = 0, self.bucket_mask = 63
                     // `(probe_seq.pos + bit) & self.bucket_mask` = 21
                     let result = (probe_seq.pos + bit) & self.bucket_mask;
+
+                    // 添加注释: 此处的`会触发一场比赛`是指在多线程环境下会出现获取到的空控制字节位置被其它线程的值写入了,
+                    //         就会变成会指向一个已经被占用的完整的存储桶, 现处理办法是再次从头扫描
+                    // 添加注释: 上述猜测是在2021/05/08 09:45
 
                     // 添加注释: 在小于Group宽度的表中, 表范围之外的尾随控制字节填充有EMPTY条目.
                     // 不幸的是, 这些会触发一场比赛, 但是一旦被掩盖, 可能会指向一个已经被占用的完整存储桶.
