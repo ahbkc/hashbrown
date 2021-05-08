@@ -890,6 +890,10 @@ impl<T, A: Allocator + Clone> RawTable<T, A> {
                     if unlikely(is_full(*self.ctrl(result))) {
                         // 添加注释: 检测控制字节的最高位是否为0, 如果为0则进入当前if内
                         // 添加注释: 最高位为零代表该控制位对应的Bucket不为空
+
+                        // 添加注释: 因为self.bucket_mask必然要小于Group::WIDTH, 所以从第一个控制字节地址开始加载16个字节,
+                        //         确保第二次扫描时能获取到一个空插槽
+
                         debug_assert!(self.bucket_mask < Group::WIDTH);
                         debug_assert_ne!(probe_seq.pos, 0);
                         // 添加注释: 根据指针地址加载16个字节,然后获取每个字节的最高位,并将结果放置在u16类型的变量中
