@@ -1,0 +1,15 @@
+Hashmap
+	bucket_mask: 3
+	ctrl_count: 19
+	items: 1
+		key: x, value: 1, hash值: 09
+
+场景一:
+	key: x1, value: 1, hash值: 09
+	调用insert方法插入指定key和对应的值, 通过调用get_mut方法得到该key不存在, 且出现了哈希冲突, 
+	所以需要调用insert方法进行保存, 先通过探测查询对应的slot, 
+	探测步骤如下:
+		1.进行hash & bucket_mask运算, 得到探测pos
+		2.根据self.ctrl(probe_seq.pos)地址一次性加载16个字节, 判断获取到的控制字节组是否有空插槽, 如果有则定义为bit
+		3.如果找到了插槽则进行(probe_seq.pos + bit) & self.bucket_mask得到最终的下标
+		4.上述3操作将会获取到表范围外的控制字节, 表范围外的控制字节可以会被其它的操作给修改
